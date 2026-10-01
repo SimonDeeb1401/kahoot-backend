@@ -25,6 +25,15 @@ export interface JoinedRoomPlayer {
   nickname: string;
 }
 
+export interface JoinedRoomSummary {
+  playerId: number;
+  sessionId: number;
+  roomCode: string;
+  nickname: string;
+  status: string;
+  quizTitle: string;
+}
+
 @Injectable()
 export class GamesService {
   constructor(
@@ -72,6 +81,29 @@ export class GamesService {
       where: { hostId },
       order: { id: 'DESC' },
     });
+  }
+
+  async findJoinedRooms(userId: number): Promise<JoinedRoomSummary[]> {
+    const players = await this.playersRepository.find({
+      where: { userId },
+      relations: { session: { quiz: true } },
+      order: { id: 'DESC' },
+    });
+    const joinedRooms = new Map<number, JoinedRoomSummary>();
+
+    for (const player of players) {
+      if (joinedRooms.has(player.sessionId)) continue;
+      joinedRooms.set(player.sessionId, {
+        playerId: player.id,
+        sessionId: player.sessionId,
+        roomCode: player.session.roomCode,
+        nickname: player.nickname,
+        status: player.session.status,
+        quizTitle: player.session.quiz.title,
+      });
+    }
+
+    return [...joinedRooms.values()];
   }
 
   async joinRoom(

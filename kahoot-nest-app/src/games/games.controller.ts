@@ -44,6 +44,11 @@ export class GamesController {
     return this.gamesService.findSessions(request.user.sub);
   }
 
+  @Get('joined')
+  findJoinedRooms(@Req() request: AuthenticatedRequest) {
+    return this.gamesService.findJoinedRooms(request.user.sub);
+  }
+
   @Post('join')
   joinRoom(
     @Req() request: AuthenticatedRequest,

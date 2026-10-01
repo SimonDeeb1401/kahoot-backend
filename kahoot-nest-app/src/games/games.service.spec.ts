@@ -13,6 +13,7 @@ describe('GamesService room joining', () => {
   const playersRepository = {
     create: vi.fn((player) => player),
     save: vi.fn(async (player) => ({ id: 29, ...player })),
+    find: vi.fn(),
   };
   const playerAnswersRepository = {};
   const quizzesRepository = {};
@@ -71,5 +72,46 @@ describe('GamesService room joining', () => {
       gamesService.joinRoom(17, { roomCode: 'AB1234', nickname: 'Player One' }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(playersRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('lists the authenticated user\'s joined rooms once each', async () => {
+    playersRepository.find.mockResolvedValue([
+      {
+        id: 31,
+        sessionId: 12,
+        nickname: 'Updated nickname',
+        session: {
+          roomCode: 'AB1234',
+          status: 'waiting',
+          quiz: { title: 'Quiz title' },
+        },
+      },
+      {
+        id: 29,
+        sessionId: 12,
+        nickname: 'Earlier nickname',
+        session: {
+          roomCode: 'AB1234',
+          status: 'waiting',
+          quiz: { title: 'Quiz title' },
+        },
+      },
+    ]);
+
+    await expect(gamesService.findJoinedRooms(17)).resolves.toEqual([
+      {
+        playerId: 31,
+        sessionId: 12,
+        roomCode: 'AB1234',
+        nickname: 'Updated nickname',
+        status: 'waiting',
+        quizTitle: 'Quiz title',
+      },
+    ]);
+    expect(playersRepository.find).toHaveBeenCalledWith({
+      where: { userId: 17 },
+      relations: { session: { quiz: true } },
+      order: { id: 'DESC' },
+    });
   });
 });

@@ -8,6 +8,8 @@ import { GamePlayer } from './entities/game-player.entity.js';
 import { GameSession } from './entities/game-session.entity.js';
 import { PlayerAnswer } from './entities/player-answer.entity.js';
 import { GamesController } from './games.controller.js';
+import { GameEngineService } from './game-engine.service.js';
+import { GamesGateway } from './games.gateway.js';
 import { GamesService } from './games.service.js';
 
 @Module({
@@ -23,6 +25,6 @@ import { GamesService } from './games.service.js';
     ]),
   ],
   controllers: [GamesController],
-  providers: [GamesService],
+  providers: [GamesService, GameEngineService, GamesGateway],
 })
 export class GamesModule {}
