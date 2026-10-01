@@ -8,12 +8,15 @@ import { GameSession } from './entities/game-session.entity.js';
 import { PlayerAnswer } from './entities/player-answer.entity.js';
 import { GamesService } from './games.service.js';
 
-describe('GamesService joinable rooms', () => {
-  const sessionsRepository = { find: vi.fn(), findOne: vi.fn() };
-  const playersRepository = {};
+describe('GamesService room joining', () => {
+  const sessionsRepository = { findOneBy: vi.fn() };
+  const playersRepository = {
+    create: vi.fn((player) => player),
+    save: vi.fn(async (player) => ({ id: 29, ...player })),
+  };
   const playerAnswersRepository = {};
   const quizzesRepository = {};
-  const questionsRepository = { find: vi.fn() };
+  const questionsRepository = {};
   const answersRepository = { find: vi.fn() };
   let gamesService: GamesService;
 
@@ -29,74 +32,44 @@ describe('GamesService joinable rooms', () => {
     );
   });
 
-  it('lists only waiting rooms with public quiz and host details', async () => {
-    sessionsRepository.find.mockResolvedValue([
-      {
-        id: 12,
-        roomCode: 'AB1234',
-        status: 'waiting',
-        host: { username: 'host-name', email: 'private@example.com' },
-        quiz: { id: 8, title: 'Quiz title', description: 'Quiz description' },
-      },
-    ]);
-
-    await expect(gamesService.findJoinableRooms()).resolves.toEqual([
-      {
-        id: 12,
-        roomCode: 'AB1234',
-        hostUsername: 'host-name',
-        quiz: { id: 8, title: 'Quiz title', description: 'Quiz description' },
-      },
-    ]);
-    expect(sessionsRepository.find).toHaveBeenCalledWith({
-      where: { status: 'waiting' },
-      relations: { quiz: true, host: true },
-      order: { id: 'DESC' },
-    });
-  });
-
-  it('returns quiz questions without exposing correct-answer flags', async () => {
-    sessionsRepository.findOne.mockResolvedValue({
-      id: 12,
-      quizId: 8,
-      roomCode: 'AB1234',
-      host: { username: 'host-name' },
-      quiz: { id: 8, title: 'Quiz title', description: null },
-    });
-    questionsRepository.find.mockResolvedValue([
-      { id: 3, text: 'Question text', timeLimit: 20, points: 1000 },
-    ]);
-    answersRepository.find.mockResolvedValue([
-      { id: 5, questionId: 3, text: 'Choice', isCorrect: true },
-    ]);
-
-    await expect(gamesService.findJoinableRoom(12)).resolves.toEqual({
+  it('creates a player in a waiting room for the authenticated user', async () => {
+    sessionsRepository.findOneBy.mockResolvedValue({
       id: 12,
       roomCode: 'AB1234',
-      hostUsername: 'host-name',
-      quiz: {
-        id: 8,
-        title: 'Quiz title',
-        description: null,
-        questions: [
-          {
-            id: 3,
-            text: 'Question text',
-            timeLimit: 20,
-            points: 1000,
-            answers: [{ id: 5, text: 'Choice' }],
-          },
-        ],
-      },
     });
+
+    await expect(
+      gamesService.joinRoom(17, {
+        roomCode: 'AB1234',
+        nickname: 'Player One',
+      }),
+    ).resolves.toEqual({
+      playerId: 29,
+      sessionId: 12,
+      roomCode: 'AB1234',
+      nickname: 'Player One',
+    });
+    expect(sessionsRepository.findOneBy).toHaveBeenCalledWith({
+      roomCode: 'AB1234',
+      status: 'waiting',
+    });
+    expect(playersRepository.create).toHaveBeenCalledWith({
+      sessionId: 12,
+      session: { id: 12 },
+      userId: 17,
+      user: { id: 17 },
+      nickname: 'Player One',
+      score: 0,
+    });
+    expect(playersRepository.save).toHaveBeenCalled();
   });
 
-  it('does not expose details for a room that is no longer joinable', async () => {
-    sessionsRepository.findOne.mockResolvedValue(null);
+  it('rejects codes for missing or non-waiting rooms', async () => {
+    sessionsRepository.findOneBy.mockResolvedValue(null);
 
-    await expect(gamesService.findJoinableRoom(12)).rejects.toBeInstanceOf(
-      NotFoundException,
-    );
-    expect(questionsRepository.find).not.toHaveBeenCalled();
+    await expect(
+      gamesService.joinRoom(17, { roomCode: 'AB1234', nickname: 'Player One' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(playersRepository.save).not.toHaveBeenCalled();
   });
 });

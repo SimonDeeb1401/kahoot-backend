@@ -16,6 +16,7 @@ import type { Request } from 'express';
 import type { JwtPayload } from '../auth/auth.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CreateGamePlayerDto } from './dto/create-game-player.dto.js';
+import { JoinGameSessionDto } from './dto/join-game-session.dto.js';
 import { UpdateGamePlayerDto } from './dto/update-game-player.dto.js';
 import { CreateGameSessionDto } from './dto/create-game-session.dto.js';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto.js';
@@ -43,16 +44,12 @@ export class GamesController {
     return this.gamesService.findSessions(request.user.sub);
   }
 
-  @Get('available')
-  findJoinableRooms() {
-    return this.gamesService.findJoinableRooms();
-  }
-
-  @Get('available/:sessionId')
-  findJoinableRoom(
-    @Param('sessionId', ParseIntPipe) sessionId: number,
+  @Post('join')
+  joinRoom(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: JoinGameSessionDto,
   ) {
-    return this.gamesService.findJoinableRoom(sessionId);
+    return this.gamesService.joinRoom(request.user.sub, dto);
   }
 
   @Get(':sessionId')
