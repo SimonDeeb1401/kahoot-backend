@@ -1,7 +1,7 @@
 import { randomInt } from 'node:crypto';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Answer } from '../quizzes/entities/answer.entity.js';
 import { Question } from '../quizzes/entities/question.entity.js';
 import { Quiz } from '../quizzes/entities/quiz.entity.js';
@@ -16,6 +16,29 @@ import { GameSession } from './entities/game-session.entity.js';
 import { PlayerAnswer } from './entities/player-answer.entity.js';
 
 const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+export interface JoinableRoom {
+  id: number;
+  roomCode: string;
+  hostUsername: string;
+  quiz: {
+    id: number;
+    title: string;
+    description: string | null;
+  };
+}
+
+export interface JoinableRoomDetails extends JoinableRoom {
+  quiz: JoinableRoom['quiz'] & {
+    questions: Array<{
+      id: number;
+      text: string;
+      timeLimit: number;
+      points: number;
+      answers: Array<{ id: number; text: string }>;
+    }>;
+  };
+}
 
 @Injectable()
 export class GamesService {
@@ -64,6 +87,54 @@ export class GamesService {
       where: { hostId },
       order: { id: 'DESC' },
     });
+  }
+
+  async findJoinableRooms(): Promise<JoinableRoom[]> {
+    const sessions = await this.sessionsRepository.find({
+      where: { status: 'waiting' },
+      relations: { quiz: true, host: true },
+      order: { id: 'DESC' },
+    });
+    return sessions.map((session) => this.toJoinableRoom(session));
+  }
+
+  async findJoinableRoom(sessionId: number): Promise<JoinableRoomDetails> {
+    const session = await this.sessionsRepository.findOne({
+      where: { id: sessionId, status: 'waiting' },
+      relations: { quiz: true, host: true },
+    });
+    if (!session) {
+      throw new NotFoundException('Joinable room not found');
+    }
+
+    const questions = await this.questionsRepository.find({
+      where: { quizId: session.quizId },
+      order: { position: 'ASC' },
+    });
+    const answers = questions.length
+      ? await this.answersRepository.find({
+          where: { questionId: In(questions.map((question) => question.id)) },
+          order: { position: 'ASC' },
+        })
+      : [];
+
+    return {
+      ...this.toJoinableRoom(session),
+      quiz: {
+        id: session.quiz.id,
+        title: session.quiz.title,
+        description: session.quiz.description,
+        questions: questions.map((question) => ({
+          id: question.id,
+          text: question.text,
+          timeLimit: question.timeLimit,
+          points: question.points,
+          answers: answers
+            .filter((answer) => answer.questionId === question.id)
+            .map((answer) => ({ id: answer.id, text: answer.text })),
+        })),
+      },
+    };
   }
 
   findSession(hostId: number, sessionId: number): Promise<GameSession> {
@@ -271,6 +342,19 @@ export class GamesService {
       throw new NotFoundException('Game session not found');
     }
     return session;
+  }
+
+  private toJoinableRoom(session: GameSession): JoinableRoom {
+    return {
+      id: session.id,
+      roomCode: session.roomCode,
+      hostUsername: session.host.username,
+      quiz: {
+        id: session.quiz.id,
+        title: session.quiz.title,
+        description: session.quiz.description,
+      },
+    };
   }
 
   private generateRoomCode(): string {

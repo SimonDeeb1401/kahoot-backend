@@ -43,6 +43,18 @@ export class GamesController {
     return this.gamesService.findSessions(request.user.sub);
   }
 
+  @Get('available')
+  findJoinableRooms() {
+    return this.gamesService.findJoinableRooms();
+  }
+
+  @Get('available/:sessionId')
+  findJoinableRoom(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+  ) {
+    return this.gamesService.findJoinableRoom(sessionId);
+  }
+
   @Get(':sessionId')
   findSession(
     @Req() request: AuthenticatedRequest,
