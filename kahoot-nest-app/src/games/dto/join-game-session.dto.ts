@@ -5,8 +5,10 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 
 export class JoinGameSessionDto {
+  @ApiProperty({ example: 'A2BC34', minLength: 1, maxLength: 16, pattern: '^[A-Z0-9]+$' })
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : value,
   )
@@ -16,6 +18,7 @@ export class JoinGameSessionDto {
   @Matches(/^[A-Z0-9]+$/)
   roomCode!: string;
 
+  @ApiProperty({ example: 'Player One', minLength: 1, maxLength: 32 })
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim() : value,
   )
