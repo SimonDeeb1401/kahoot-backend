@@ -8,6 +8,11 @@ describe('GamesGateway', () => {
   const gameEngine = {
     getRoomSnapshot: vi.fn(),
     startCompetition: vi.fn(),
+    getCurrentQuestion: vi.fn(),
+    advanceQuestion: vi.fn(),
+    submitPlayerAnswer: vi.fn(),
+    getAnswerProgress: vi.fn(),
+    getPlayerAnswerFeedback: vi.fn(),
   };
   let gamesGateway: GamesGateway;
   let roomEmit: ReturnType<typeof vi.fn>;
@@ -93,6 +98,7 @@ describe('GamesGateway', () => {
       quiz: { id: 8, title: 'Quiz', description: null, questions: [] },
     };
     gameEngine.startCompetition.mockResolvedValue(competition);
+    gameEngine.getCurrentQuestion.mockResolvedValue(null);
     const client = {
       data: { userId: 7, sessionId: 12, role: 'host' },
       emit: vi.fn(),
@@ -103,5 +109,82 @@ describe('GamesGateway', () => {
     expect(gameEngine.startCompetition).toHaveBeenCalledWith(7, 12);
     expect(serverTo).toHaveBeenCalledWith('game-session:12');
     expect(roomEmit).toHaveBeenCalledWith('competition-started', competition);
+  });
+
+  it('broadcasts the next question to the room for the joined host', async () => {
+    const question = {
+      sessionId: 12,
+      questionNumber: 2,
+      totalQuestions: 3,
+      question: { id: 4, text: 'Question?', answers: [] },
+    };
+    gameEngine.advanceQuestion.mockResolvedValue(question);
+    const client = {
+      data: { userId: 7, sessionId: 12, role: 'host' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.nextQuestion(client, { sessionId: 12 });
+
+    expect(gameEngine.advanceQuestion).toHaveBeenCalledWith(7, 12);
+    expect(serverTo).toHaveBeenCalledWith('game-session:12');
+    expect(roomEmit).toHaveBeenCalledWith('question-delivered', question);
+  });
+
+  it('rejects question advancement from a player socket', async () => {
+    const client = {
+      data: { userId: 17, sessionId: 12, role: 'player' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.nextQuestion(client, { sessionId: 12 });
+
+    expect(gameEngine.advanceQuestion).not.toHaveBeenCalled();
+    expect(client.emit).toHaveBeenCalledWith('room-error', {
+      message: 'Only the room host can advance this competition.',
+    });
+  });
+
+  it('broadcasts completion after the last question', async () => {
+    gameEngine.advanceQuestion.mockResolvedValue(null);
+    const client = {
+      data: { userId: 7, sessionId: 12, role: 'host' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.nextQuestion(client, { sessionId: 12 });
+
+    expect(roomEmit).toHaveBeenCalledWith('competition-finished', {
+      sessionId: 12,
+    });
+  });
+
+  it('sends answer feedback only to the player and counts only to hosts', async () => {
+    const feedback = {
+      sessionId: 12,
+      questionId: 3,
+      selectedAnswerId: 6,
+      correctAnswerId: 5,
+      isCorrect: false,
+    };
+    const progress = {
+      sessionId: 12,
+      questionId: 3,
+      answeredCount: 1,
+      totalPlayers: 2,
+      answerCounts: [{ answerId: 6, count: 1 }],
+    };
+    gameEngine.submitPlayerAnswer.mockResolvedValue({ feedback, progress });
+    const client = {
+      data: { userId: 17, sessionId: 12, playerId: 29, role: 'player' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.submitAnswer(client, { questionId: 3, answerId: 6 });
+
+    expect(gameEngine.submitPlayerAnswer).toHaveBeenCalledWith(17, 12, 29, 3, 6);
+    expect(client.emit).toHaveBeenCalledWith('answer-feedback', feedback);
+    expect(serverTo).toHaveBeenCalledWith('game-session:12:hosts');
+    expect(roomEmit).toHaveBeenCalledWith('answer-progress', progress);
   });
 });

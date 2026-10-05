@@ -14,6 +14,11 @@ import { GameSession } from './game-session.entity.js';
 @Entity({ name: 'player_answers' })
 @Index('IDX_player_answers_session_id', ['sessionId'])
 @Index('IDX_player_answers_player_id', ['playerId'])
+@Index(
+  'UQ_player_answers_session_player_question',
+  ['sessionId', 'playerId', 'questionId'],
+  { unique: true },
+)
 export class PlayerAnswer {
   @PrimaryGeneratedColumn({ type: 'int' })
   id!: number;

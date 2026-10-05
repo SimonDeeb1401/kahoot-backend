@@ -12,6 +12,7 @@ import { Question } from '../quizzes/entities/question.entity.js';
 import { Quiz } from '../quizzes/entities/quiz.entity.js';
 import { GamePlayer } from './entities/game-player.entity.js';
 import { GameSession } from './entities/game-session.entity.js';
+import { PlayerAnswer } from './entities/player-answer.entity.js';
 
 export interface RoomPlayerSummary {
 	id: number;
@@ -33,6 +34,30 @@ export interface CompetitionQuiz {
 			answers: Array<{ id: number; text: string }>;
 		}>;
 	};
+}
+
+export interface QuestionDelivery {
+	sessionId: number;
+	questionNumber: number;
+	totalQuestions: number;
+	endsAt: string;
+	question: CompetitionQuiz['quiz']['questions'][number];
+}
+
+export interface AnswerProgress {
+	sessionId: number;
+	questionId: number;
+	answeredCount: number;
+	totalPlayers: number;
+	answerCounts: Array<{ answerId: number; count: number }>;
+}
+
+export interface AnswerFeedback {
+	sessionId: number;
+	questionId: number;
+	selectedAnswerId: number;
+	correctAnswerId: number;
+	isCorrect: boolean;
 }
 
 export interface RoomSnapshot {
@@ -57,6 +82,8 @@ export class GameEngineService {
 		private readonly questionsRepository: Repository<Question>,
 		@InjectRepository(Answer)
 		private readonly answersRepository: Repository<Answer>,
+		@InjectRepository(PlayerAnswer)
+		private readonly playerAnswersRepository: Repository<PlayerAnswer>,
 	) {}
 
 	async getRoomSnapshot(
@@ -96,7 +123,7 @@ export class GameEngineService {
 			players: players.map(({ id, nickname }) => ({ id, nickname })),
 			competition:
 				session.status === 'active'
-					? await this.createCompetitionQuiz(session)
+					? await this.createCurrentQuestionCompetition(session)
 					: null,
 		};
 	}
@@ -123,14 +150,230 @@ export class GameEngineService {
 
 		const result = await this.sessionsRepository.update(
 			{ id: sessionId, hostId, status: 'waiting' },
-			{ status: 'active', startedAt: new Date() },
+			{
+				status: 'active',
+				startedAt: new Date(),
+				currentQuestionIndex: 0,
+				currentQuestionStartedAt: new Date(),
+			},
 		);
 		if (result.affected !== 1) {
 			throw new ConflictException('This competition has already started.');
 		}
 
 		session.status = 'active';
-		return this.createCompetitionQuiz(session);
+		session.currentQuestionIndex = 0;
+		session.currentQuestionStartedAt = new Date();
+		return this.createCurrentQuestionCompetition(session);
+	}
+
+	async getCurrentQuestion(sessionId: number): Promise<QuestionDelivery | null> {
+		const session = await this.sessionsRepository.findOneBy({ id: sessionId });
+		if (!session || session.status !== 'active') return null;
+
+		const competition = await this.createCompetitionQuiz(session);
+		const questionIndex = session.currentQuestionIndex ?? 0;
+		const question = competition.quiz.questions[questionIndex];
+		if (!question) return null;
+
+		const startedAt = await this.getQuestionStartedAt(session);
+		return {
+			sessionId,
+			questionNumber: questionIndex + 1,
+			totalQuestions: competition.quiz.questions.length,
+			endsAt: new Date(startedAt.getTime() + question.timeLimit * 1000).toISOString(),
+			question,
+		};
+	}
+
+	async getAnswerProgress(
+		sessionId: number,
+		questionId: number,
+	): Promise<AnswerProgress> {
+		const [totalPlayers, playerAnswers] = await Promise.all([
+			this.playersRepository.countBy({ sessionId }),
+			this.playerAnswersRepository.find({ where: { sessionId, questionId } }),
+		]);
+		const counts = new Map<number, number>();
+		for (const playerAnswer of playerAnswers) {
+			counts.set(playerAnswer.answerId, (counts.get(playerAnswer.answerId) ?? 0) + 1);
+		}
+
+		return {
+			sessionId,
+			questionId,
+			answeredCount: playerAnswers.length,
+			totalPlayers,
+			answerCounts: [...counts].map(([answerId, count]) => ({ answerId, count })),
+		};
+	}
+
+	async getPlayerAnswerFeedback(
+		sessionId: number,
+		playerId: number,
+		questionId: number,
+	): Promise<AnswerFeedback | null> {
+		const playerAnswer = await this.playerAnswersRepository.findOneBy({
+			sessionId,
+			playerId,
+			questionId,
+		});
+		if (!playerAnswer) return null;
+
+		return {
+			sessionId,
+			questionId,
+			selectedAnswerId: playerAnswer.answerId,
+			correctAnswerId: playerAnswer.isCorrect ? playerAnswer.answerId :
+				(await this.answersRepository.findOneBy({ questionId, isCorrect: true }))?.id ?? 0,
+			isCorrect: playerAnswer.isCorrect,
+		};
+	}
+
+	async submitPlayerAnswer(
+		userId: number,
+		sessionId: number,
+		playerId: number,
+		questionId: number,
+		answerId: number,
+	): Promise<{ feedback: AnswerFeedback; progress: AnswerProgress }> {
+		const session = await this.sessionsRepository.findOneBy({ id: sessionId });
+		if (!session || session.status !== 'active') {
+			throw new ConflictException('This competition is not accepting answers.');
+		}
+		const player = await this.playersRepository.findOneBy({ id: playerId, sessionId, userId });
+		if (!player) {
+			throw new ForbiddenException('You have not joined this room.');
+		}
+
+		const competition = await this.createCompetitionQuiz(session);
+		const question = competition.quiz.questions[session.currentQuestionIndex ?? 0];
+		if (!question || question.id !== questionId) {
+			throw new ConflictException('This question is no longer active.');
+		}
+
+		const startedAt = await this.getQuestionStartedAt(session);
+		if (Date.now() >= startedAt.getTime() + question.timeLimit * 1000) {
+			throw new ConflictException('Time is up for this question.');
+		}
+
+		const existingAnswer = await this.playerAnswersRepository.findOneBy({
+			sessionId,
+			playerId,
+			questionId,
+		});
+		if (existingAnswer) {
+			throw new ConflictException('You have already answered this question.');
+		}
+
+		const answer = await this.answersRepository.findOneBy({ id: answerId, questionId });
+		if (!answer) {
+			throw new NotFoundException('Answer not found for this question.');
+		}
+
+		const responseTimeMs = Date.now() - startedAt.getTime();
+		const playerAnswer = this.playerAnswersRepository.create({
+			sessionId,
+			session: { id: sessionId } as GameSession,
+			playerId,
+			player: { id: playerId } as GamePlayer,
+			questionId,
+			question: { id: questionId } as Question,
+			answerId,
+			answer,
+			responseTimeMs,
+			isCorrect: answer.isCorrect,
+		});
+		await this.playerAnswersRepository.save(playerAnswer);
+
+		const correctAnswer = answer.isCorrect
+			? answer
+			: await this.answersRepository.findOneBy({ questionId, isCorrect: true });
+		const feedback: AnswerFeedback = {
+			sessionId,
+			questionId,
+			selectedAnswerId: answerId,
+			correctAnswerId: correctAnswer?.id ?? 0,
+			isCorrect: answer.isCorrect,
+		};
+		return {
+			feedback,
+			progress: await this.getAnswerProgress(sessionId, questionId),
+		};
+	}
+
+	async advanceQuestion(
+		hostId: number,
+		sessionId: number,
+	): Promise<QuestionDelivery | null> {
+		const session = await this.sessionsRepository.findOneBy({
+			id: sessionId,
+			hostId,
+		});
+		if (!session) {
+			throw new NotFoundException('Game session not found');
+		}
+		if (session.status !== 'active') {
+			throw new ConflictException('This competition is not active.');
+		}
+
+		const competition = await this.createCompetitionQuiz(session);
+		const currentIndex = session.currentQuestionIndex ?? 0;
+		const currentQuestion = competition.quiz.questions[currentIndex];
+		if (!currentQuestion) return null;
+
+		const startedAt = await this.getQuestionStartedAt(session);
+		const progress = await this.getAnswerProgress(sessionId, currentQuestion.id);
+		const deadline = startedAt.getTime() + currentQuestion.timeLimit * 1000;
+		if (progress.answeredCount < progress.totalPlayers && Date.now() < deadline) {
+			throw new ConflictException('Wait for all players to answer or for the timer to end.');
+		}
+
+		const nextIndex = currentIndex + 1;
+		if (nextIndex >= competition.quiz.questions.length) {
+			await this.sessionsRepository.update(
+				{ id: sessionId, hostId, status: 'active', currentQuestionIndex: currentIndex },
+				{ status: 'completed', endedAt: new Date() },
+			);
+			return null;
+		}
+
+		const nextQuestionStartedAt = new Date();
+		const result = await this.sessionsRepository.update(
+			{ id: sessionId, hostId, status: 'active', currentQuestionIndex: currentIndex },
+			{ currentQuestionIndex: nextIndex, currentQuestionStartedAt: nextQuestionStartedAt },
+		);
+		if (result.affected !== 1) {
+			throw new ConflictException('The question has already advanced.');
+		}
+		session.currentQuestionIndex = nextIndex;
+		session.currentQuestionStartedAt = nextQuestionStartedAt;
+		return this.getCurrentQuestion(sessionId);
+	}
+
+	private async createCurrentQuestionCompetition(
+		session: GameSession,
+	): Promise<CompetitionQuiz> {
+		const competition = await this.createCompetitionQuiz(session);
+		const questionIndex = session.currentQuestionIndex ?? 0;
+		return {
+			...competition,
+			quiz: {
+				...competition.quiz,
+				questions: competition.quiz.questions.slice(questionIndex, questionIndex + 1),
+			},
+		};
+	}
+
+	private async getQuestionStartedAt(session: GameSession): Promise<Date> {
+		if (session.currentQuestionStartedAt) return session.currentQuestionStartedAt;
+		const startedAt = session.startedAt ?? new Date();
+		await this.sessionsRepository.update(
+			{ id: session.id, status: 'active' },
+			{ currentQuestionStartedAt: startedAt },
+		);
+		session.currentQuestionStartedAt = startedAt;
+		return startedAt;
 	}
 
 	private async createCompetitionQuiz(

@@ -41,4 +41,10 @@ export class GameSession {
 
   @Column({ name: 'ended_at', type: 'timestamptz', nullable: true })
   endedAt!: Date | null;
+
+  @Column({ name: 'current_question_index', type: 'int', default: 0 })
+  currentQuestionIndex!: number;
+
+  @Column({ name: 'current_question_started_at', type: 'timestamptz', nullable: true })
+  currentQuestionStartedAt!: Date | null;
 }
