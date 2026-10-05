@@ -56,4 +56,7 @@ export class PlayerAnswer {
 
   @Column({ name: 'is_correct', type: 'boolean' })
   isCorrect!: boolean;
+
+  @Column({ name: 'points_awarded', type: 'int', default: 0 })
+  pointsAwarded!: number;
 }

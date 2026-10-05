@@ -58,6 +58,8 @@ export interface AnswerFeedback {
 	selectedAnswerId: number;
 	correctAnswerId: number;
 	isCorrect: boolean;
+	pointsAwarded: number;
+	totalScore: number;
 }
 
 export interface RoomSnapshot {
@@ -219,6 +221,8 @@ export class GameEngineService {
 			questionId,
 		});
 		if (!playerAnswer) return null;
+		const player = await this.playersRepository.findOneBy({ id: playerId, sessionId });
+		if (!player) return null;
 
 		return {
 			sessionId,
@@ -227,6 +231,8 @@ export class GameEngineService {
 			correctAnswerId: playerAnswer.isCorrect ? playerAnswer.answerId :
 				(await this.answersRepository.findOneBy({ questionId, isCorrect: true }))?.id ?? 0,
 			isCorrect: playerAnswer.isCorrect,
+			pointsAwarded: playerAnswer.pointsAwarded,
+			totalScore: player.score,
 		};
 	}
 
@@ -272,6 +278,12 @@ export class GameEngineService {
 		}
 
 		const responseTimeMs = Date.now() - startedAt.getTime();
+		const pointsAwarded = answer.isCorrect
+			? Math.round(
+					question.points *
+						(1 - 0.5 * Math.min(responseTimeMs / (question.timeLimit * 1000), 1)),
+				)
+			: 0;
 		const playerAnswer = this.playerAnswersRepository.create({
 			sessionId,
 			session: { id: sessionId } as GameSession,
@@ -283,8 +295,13 @@ export class GameEngineService {
 			answer,
 			responseTimeMs,
 			isCorrect: answer.isCorrect,
+			pointsAwarded,
 		});
 		await this.playerAnswersRepository.save(playerAnswer);
+		if (pointsAwarded > 0) {
+			await this.playersRepository.increment({ id: playerId, sessionId }, 'score', pointsAwarded);
+		}
+		const updatedPlayer = await this.playersRepository.findOneBy({ id: playerId, sessionId });
 
 		const correctAnswer = answer.isCorrect
 			? answer
@@ -295,6 +312,8 @@ export class GameEngineService {
 			selectedAnswerId: answerId,
 			correctAnswerId: correctAnswer?.id ?? 0,
 			isCorrect: answer.isCorrect,
+			pointsAwarded,
+			totalScore: updatedPlayer?.score ?? (player.score ?? 0) + pointsAwarded,
 		};
 		return {
 			feedback,

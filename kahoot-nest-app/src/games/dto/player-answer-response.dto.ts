@@ -21,4 +21,7 @@ export class PlayerAnswerResponseDto {
 
   @ApiProperty({ example: true })
   isCorrect!: boolean;
+
+  @ApiProperty({ example: 875, minimum: 0 })
+  pointsAwarded!: number;
 }

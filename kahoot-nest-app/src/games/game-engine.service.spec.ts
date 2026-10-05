@@ -21,6 +21,7 @@ describe('GameEngineService', () => {
     findOneBy: vi.fn(),
     find: vi.fn(),
     countBy: vi.fn(),
+    increment: vi.fn(),
   };
   const quizzesRepository = { findOneBy: vi.fn() };
   const questionsRepository = { find: vi.fn() };
@@ -45,6 +46,8 @@ describe('GameEngineService', () => {
     );
     playerAnswersRepository.find.mockResolvedValue([]);
   });
+
+  afterEach(() => vi.restoreAllMocks());
 
   it('returns a roster only to the host or a joined player', async () => {
     sessionsRepository.findOneBy.mockResolvedValue({
@@ -205,7 +208,7 @@ describe('GameEngineService', () => {
     startedAt: new Date(Date.now() - 1200),
   };
   sessionsRepository.findOneBy.mockResolvedValue(session);
-  playersRepository.findOneBy.mockResolvedValue({ id: 29, sessionId: 12, userId: 17 });
+  playersRepository.findOneBy.mockResolvedValue({ id: 29, sessionId: 12, userId: 17, score: 350 });
   playersRepository.countBy.mockResolvedValue(2);
   quizzesRepository.findOneBy.mockResolvedValue({ id: 8, title: 'Quiz title', description: null });
   questionsRepository.find.mockResolvedValue([
@@ -238,6 +241,8 @@ describe('GameEngineService', () => {
       selectedAnswerId: 6,
       correctAnswerId: 5,
       isCorrect: false,
+      pointsAwarded: 0,
+      totalScore: 350,
     },
     progress: {
       sessionId: 12,
@@ -254,6 +259,7 @@ describe('GameEngineService', () => {
       questionId: 3,
       answerId: 6,
       isCorrect: false,
+      pointsAwarded: 0,
       responseTimeMs: expect.any(Number),
     }),
   );
@@ -309,6 +315,54 @@ describe('GameEngineService', () => {
     questionNumber: 2,
     question: { id: 4 },
   });
+  });
+
+  it('awards a speed-weighted score and increments the player total', async () => {
+  const startedAt = new Date(10_000);
+  const player = { id: 29, sessionId: 12, userId: 17, score: 250 };
+  sessionsRepository.findOneBy.mockResolvedValue({
+    id: 12,
+    quizId: 8,
+    status: 'active',
+    currentQuestionIndex: 0,
+    currentQuestionStartedAt: startedAt,
+  });
+  playersRepository.findOneBy
+    .mockResolvedValueOnce(player)
+    .mockResolvedValueOnce({ ...player, score: 1200 });
+  playersRepository.countBy.mockResolvedValue(1);
+  quizzesRepository.findOneBy.mockResolvedValue({ id: 8, title: 'Quiz title', description: null });
+  questionsRepository.find.mockResolvedValue([
+    { id: 3, text: 'First?', timeLimit: 20, points: 1000 },
+  ]);
+  answersRepository.find.mockResolvedValue([
+    { id: 5, questionId: 3, text: 'Correct', isCorrect: true },
+  ]);
+  answersRepository.findOneBy.mockResolvedValue({
+    id: 5,
+    questionId: 3,
+    text: 'Correct',
+    isCorrect: true,
+  });
+  playerAnswersRepository.findOneBy.mockResolvedValue(null);
+  playerAnswersRepository.find.mockResolvedValue([{ answerId: 5 }]);
+  vi.spyOn(Date, 'now').mockReturnValue(12_000);
+
+  await expect(gameEngineService.submitPlayerAnswer(17, 12, 29, 3, 5)).resolves.toMatchObject({
+    feedback: {
+      isCorrect: true,
+      pointsAwarded: 950,
+      totalScore: 1200,
+    },
+  });
+  expect(playerAnswersRepository.save).toHaveBeenCalledWith(
+    expect.objectContaining({ responseTimeMs: 2000, pointsAwarded: 950 }),
+  );
+  expect(playersRepository.increment).toHaveBeenCalledWith(
+    { id: 29, sessionId: 12 },
+    'score',
+    950,
+  );
   });
 
   it('requires at least one player before the host can start', async () => {
