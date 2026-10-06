@@ -222,6 +222,7 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 			} else {
 				room.emit('competition-finished', {
 					sessionId: message.sessionId,
+					leaderboard: await this.gameEngine.getLeaderboard(message.sessionId),
 				});
 			}
 		} catch (error) {

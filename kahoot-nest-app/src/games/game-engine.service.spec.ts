@@ -68,6 +68,7 @@ describe('GameEngineService', () => {
       role: 'player',
       players: [{ id: 29, nickname: 'Player One' }],
       competition: null,
+      leaderboard: null,
     });
     expect(playersRepository.findOneBy).toHaveBeenCalledWith({
       id: 29,
@@ -89,6 +90,30 @@ describe('GameEngineService', () => {
       ForbiddenException,
     );
     expect(playersRepository.find).not.toHaveBeenCalled();
+  });
+
+  it('returns persisted player scores in leaderboard order for completed rooms', async () => {
+    sessionsRepository.findOneBy.mockResolvedValue({
+      id: 12,
+      hostId: 7,
+      roomCode: 'AB1234',
+      status: 'completed',
+    });
+    playersRepository.find.mockResolvedValue([
+      { id: 31, nickname: 'Player Two', score: 950 },
+      { id: 29, nickname: 'Player One', score: 600 },
+    ]);
+
+    await expect(gameEngineService.getRoomSnapshot(7, 12)).resolves.toMatchObject({
+      leaderboard: [
+        { id: 31, nickname: 'Player Two', score: 950 },
+        { id: 29, nickname: 'Player One', score: 600 },
+      ],
+    });
+    expect(playersRepository.find).toHaveBeenCalledWith({
+      where: { sessionId: 12 },
+      order: { score: 'DESC', id: 'ASC' },
+    });
   });
 
   it('starts a waiting session and exposes answer text but not correctness', async () => {

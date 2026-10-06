@@ -19,6 +19,10 @@ export interface RoomPlayerSummary {
 	nickname: string;
 }
 
+export interface LeaderboardEntry extends RoomPlayerSummary {
+	score: number;
+}
+
 export interface CompetitionQuiz {
 	sessionId: number;
 	roomCode: string;
@@ -69,6 +73,7 @@ export interface RoomSnapshot {
 	role: 'host' | 'player';
 	players: RoomPlayerSummary[];
 	competition: CompetitionQuiz | null;
+	leaderboard: LeaderboardEntry[] | null;
 }
 
 @Injectable()
@@ -127,7 +132,17 @@ export class GameEngineService {
 				session.status === 'active'
 					? await this.createCurrentQuestionCompetition(session)
 					: null,
+			leaderboard:
+				session.status === 'completed' ? await this.getLeaderboard(sessionId) : null,
 		};
+	}
+
+	async getLeaderboard(sessionId: number): Promise<LeaderboardEntry[]> {
+		const players = await this.playersRepository.find({
+			where: { sessionId },
+			order: { score: 'DESC', id: 'ASC' },
+		});
+		return players.map(({ id, nickname, score }) => ({ id, nickname, score }));
 	}
 
 	async startCompetition(
@@ -350,10 +365,13 @@ export class GameEngineService {
 
 		const nextIndex = currentIndex + 1;
 		if (nextIndex >= competition.quiz.questions.length) {
-			await this.sessionsRepository.update(
+			const result = await this.sessionsRepository.update(
 				{ id: sessionId, hostId, status: 'active', currentQuestionIndex: currentIndex },
 				{ status: 'completed', endedAt: new Date() },
 			);
+			if (result.affected !== 1) {
+				throw new ConflictException('The competition has already finished.');
+			}
 			return null;
 		}
 

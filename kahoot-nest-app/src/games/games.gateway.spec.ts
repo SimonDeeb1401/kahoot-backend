@@ -10,6 +10,7 @@ describe('GamesGateway', () => {
     startCompetition: vi.fn(),
     getCurrentQuestion: vi.fn(),
     advanceQuestion: vi.fn(),
+    getLeaderboard: vi.fn(),
     submitPlayerAnswer: vi.fn(),
     getAnswerProgress: vi.fn(),
     getPlayerAnswerFeedback: vi.fn(),
@@ -147,6 +148,9 @@ describe('GamesGateway', () => {
 
   it('broadcasts completion after the last question', async () => {
     gameEngine.advanceQuestion.mockResolvedValue(null);
+    gameEngine.getLeaderboard.mockResolvedValue([
+      { id: 29, nickname: 'Player One', score: 950 },
+    ]);
     const client = {
       data: { userId: 7, sessionId: 12, role: 'host' },
       emit: vi.fn(),
@@ -156,6 +160,7 @@ describe('GamesGateway', () => {
 
     expect(roomEmit).toHaveBeenCalledWith('competition-finished', {
       sessionId: 12,
+      leaderboard: [{ id: 29, nickname: 'Player One', score: 950 }],
     });
   });
 
