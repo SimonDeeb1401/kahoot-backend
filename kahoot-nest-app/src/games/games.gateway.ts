@@ -220,9 +220,14 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 						),
 					);
 			} else {
+				const [leaderboard, statistics] = await Promise.all([
+					this.gameEngine.getLeaderboard(message.sessionId),
+					this.gameEngine.getQuestionStatistics(message.sessionId),
+				]);
 				room.emit('competition-finished', {
 					sessionId: message.sessionId,
-					leaderboard: await this.gameEngine.getLeaderboard(message.sessionId),
+					leaderboard,
+					statistics,
 				});
 			}
 		} catch (error) {

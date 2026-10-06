@@ -69,6 +69,7 @@ describe('GameEngineService', () => {
       players: [{ id: 29, nickname: 'Player One' }],
       competition: null,
       leaderboard: null,
+      statistics: null,
     });
     expect(playersRepository.findOneBy).toHaveBeenCalledWith({
       id: 29,
@@ -96,9 +97,18 @@ describe('GameEngineService', () => {
     sessionsRepository.findOneBy.mockResolvedValue({
       id: 12,
       hostId: 7,
+      quizId: 8,
       roomCode: 'AB1234',
       status: 'completed',
     });
+    quizzesRepository.findOneBy.mockResolvedValue({
+      id: 8,
+      title: 'Quiz title',
+      description: null,
+    });
+    questionsRepository.find.mockResolvedValue([]);
+    answersRepository.find.mockResolvedValue([]);
+    playersRepository.countBy.mockResolvedValue(2);
     playersRepository.find.mockResolvedValue([
       { id: 31, nickname: 'Player Two', score: 950 },
       { id: 29, nickname: 'Player One', score: 600 },
@@ -113,6 +123,49 @@ describe('GameEngineService', () => {
     expect(playersRepository.find).toHaveBeenCalledWith({
       where: { sessionId: 12 },
       order: { score: 'DESC', id: 'ASC' },
+    });
+  });
+
+  it('returns per-question success counts and average response times', async () => {
+    sessionsRepository.findOneBy.mockResolvedValue({
+      id: 12,
+      quizId: 8,
+      roomCode: 'AB1234',
+    });
+    quizzesRepository.findOneBy.mockResolvedValue({
+      id: 8,
+      title: 'Quiz title',
+      description: null,
+    });
+    questionsRepository.find.mockResolvedValue([
+      { id: 3, text: 'First question?', timeLimit: 20, points: 1000 },
+      { id: 4, text: 'Second question?', timeLimit: 20, points: 1000 },
+    ]);
+    answersRepository.find.mockResolvedValue([]);
+    playersRepository.countBy.mockResolvedValue(2);
+    playerAnswersRepository.find.mockResolvedValue([
+      { questionId: 3, isCorrect: true, responseTimeMs: 1000 },
+      { questionId: 3, isCorrect: false, responseTimeMs: 3000 },
+    ]);
+
+    await expect(gameEngineService.getQuestionStatistics(12)).resolves.toEqual([
+      {
+        questionId: 3,
+        questionText: 'First question?',
+        correctAnswers: 1,
+        totalPlayers: 2,
+        averageResponseTimeMs: 2000,
+      },
+      {
+        questionId: 4,
+        questionText: 'Second question?',
+        correctAnswers: 0,
+        totalPlayers: 2,
+        averageResponseTimeMs: null,
+      },
+    ]);
+    expect(playerAnswersRepository.find).toHaveBeenCalledWith({
+      where: { sessionId: 12 },
     });
   });
 

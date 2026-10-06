@@ -23,6 +23,14 @@ export interface LeaderboardEntry extends RoomPlayerSummary {
 	score: number;
 }
 
+export interface QuestionStatistic {
+	questionId: number;
+	questionText: string;
+	correctAnswers: number;
+	totalPlayers: number;
+	averageResponseTimeMs: number | null;
+}
+
 export interface CompetitionQuiz {
 	sessionId: number;
 	roomCode: string;
@@ -74,6 +82,7 @@ export interface RoomSnapshot {
 	players: RoomPlayerSummary[];
 	competition: CompetitionQuiz | null;
 	leaderboard: LeaderboardEntry[] | null;
+	statistics: QuestionStatistic[] | null;
 }
 
 @Injectable()
@@ -134,6 +143,10 @@ export class GameEngineService {
 					: null,
 			leaderboard:
 				session.status === 'completed' ? await this.getLeaderboard(sessionId) : null,
+			statistics:
+				session.status === 'completed'
+					? await this.getQuestionStatistics(sessionId)
+					: null,
 		};
 	}
 
@@ -143,6 +156,48 @@ export class GameEngineService {
 			order: { score: 'DESC', id: 'ASC' },
 		});
 		return players.map(({ id, nickname, score }) => ({ id, nickname, score }));
+	}
+
+	async getQuestionStatistics(sessionId: number): Promise<QuestionStatistic[]> {
+		const session = await this.sessionsRepository.findOneBy({ id: sessionId });
+		if (!session) {
+			throw new NotFoundException('Game session not found');
+		}
+
+		const competition = await this.createCompetitionQuiz(session);
+		const [totalPlayers, playerAnswers] = await Promise.all([
+			this.playersRepository.countBy({ sessionId }),
+			this.playerAnswersRepository.find({ where: { sessionId } }),
+		]);
+		const answersByQuestion = new Map<
+			number,
+			{ correctAnswers: number; responseTimeTotal: number; responseCount: number }
+		>();
+
+		for (const answer of playerAnswers) {
+			const statistic = answersByQuestion.get(answer.questionId) ?? {
+				correctAnswers: 0,
+				responseTimeTotal: 0,
+				responseCount: 0,
+			};
+			if (answer.isCorrect) statistic.correctAnswers += 1;
+			statistic.responseTimeTotal += answer.responseTimeMs;
+			statistic.responseCount += 1;
+			answersByQuestion.set(answer.questionId, statistic);
+		}
+
+		return competition.quiz.questions.map((question) => {
+			const statistic = answersByQuestion.get(question.id);
+			return {
+				questionId: question.id,
+				questionText: question.text,
+				correctAnswers: statistic?.correctAnswers ?? 0,
+				totalPlayers,
+				averageResponseTimeMs: statistic?.responseCount
+					? Math.round(statistic.responseTimeTotal / statistic.responseCount)
+					: null,
+			};
+		});
 	}
 
 	async startCompetition(
