@@ -10,6 +10,7 @@ describe('GamesGateway', () => {
     startCompetition: vi.fn(),
     getCurrentQuestion: vi.fn(),
     advanceQuestion: vi.fn(),
+    advanceQuestionAutomatically: vi.fn(),
     getLeaderboard: vi.fn(),
     getQuestionStatistics: vi.fn(),
     submitPlayerAnswer: vi.fn(),
@@ -32,6 +33,11 @@ describe('GamesGateway', () => {
       value: { to: serverTo },
       configurable: true,
     });
+  });
+
+  afterEach(() => {
+    gamesGateway.onModuleDestroy();
+    vi.useRealTimers();
   });
 
   it('verifies a token in socket middleware before allowing connection', async () => {
@@ -206,9 +212,137 @@ describe('GamesGateway', () => {
 
     await gamesGateway.submitAnswer(client, { questionId: 3, answerId: 6 });
 
-    expect(gameEngine.submitPlayerAnswer).toHaveBeenCalledWith(17, 12, 29, 3, 6);
+    expect(gameEngine.submitPlayerAnswer).toHaveBeenCalledWith(
+      17,
+      12,
+      29,
+      3,
+      6,
+    );
     expect(client.emit).toHaveBeenCalledWith('answer-feedback', feedback);
     expect(serverTo).toHaveBeenCalledWith('game-session:12:hosts');
     expect(roomEmit).toHaveBeenCalledWith('answer-progress', progress);
+  });
+
+  it('starts a five-second countdown when every player has answered', async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date();
+    vi.setSystemTime(startedAt);
+    const currentQuestion = {
+      sessionId: 12,
+      questionNumber: 1,
+      totalQuestions: 2,
+      endsAt: new Date(startedAt.getTime() + 20_000).toISOString(),
+      question: {
+        id: 3,
+        text: 'First?',
+        timeLimit: 20,
+        points: 1000,
+        answers: [],
+      },
+    };
+    const nextQuestion = {
+      ...currentQuestion,
+      questionNumber: 2,
+      question: { ...currentQuestion.question, id: 4 },
+    };
+    gameEngine.getCurrentQuestion.mockResolvedValue(currentQuestion);
+    gameEngine.submitPlayerAnswer.mockResolvedValue({
+      feedback: { sessionId: 12, questionId: 3 },
+      progress: {
+        sessionId: 12,
+        questionId: 3,
+        answeredCount: 2,
+        totalPlayers: 2,
+        answerCounts: [],
+      },
+    });
+    gameEngine.advanceQuestionAutomatically.mockResolvedValue({
+      advanced: true,
+      question: nextQuestion,
+    });
+    gameEngine.getAnswerProgress.mockResolvedValue({
+      sessionId: 12,
+      questionId: 4,
+      answeredCount: 0,
+      totalPlayers: 2,
+      answerCounts: [],
+    });
+    const client = {
+      data: { userId: 17, sessionId: 12, playerId: 29, role: 'player' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.submitAnswer(client, { questionId: 3, answerId: 6 });
+
+    expect(roomEmit).toHaveBeenCalledWith(
+      'question-countdown',
+      expect.objectContaining({
+        sessionId: 12,
+        questionId: 3,
+        seconds: 5,
+        reason: 'all-players-answered',
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(gameEngine.advanceQuestionAutomatically).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(gameEngine.advanceQuestionAutomatically).toHaveBeenCalledWith(12, 3);
+    expect(roomEmit).toHaveBeenCalledWith('question-delivered', nextQuestion);
+  });
+
+  it('starts the countdown after the question timer expires', async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date();
+    vi.setSystemTime(startedAt);
+    const question = {
+      sessionId: 12,
+      questionNumber: 1,
+      totalQuestions: 1,
+      endsAt: new Date(startedAt.getTime() + 10_000).toISOString(),
+      question: {
+        id: 3,
+        text: 'First?',
+        timeLimit: 10,
+        points: 1000,
+        answers: [],
+      },
+    };
+    gameEngine.startCompetition.mockResolvedValue({
+      sessionId: 12,
+      roomCode: 'AB1234',
+      quiz: { id: 8, title: 'Quiz', description: null, questions: [] },
+    });
+    gameEngine.getCurrentQuestion.mockResolvedValue(question);
+    gameEngine.getAnswerProgress.mockResolvedValue({
+      sessionId: 12,
+      questionId: 3,
+      answeredCount: 0,
+      totalPlayers: 1,
+      answerCounts: [],
+    });
+    gameEngine.advanceQuestionAutomatically.mockResolvedValue({
+      advanced: false,
+      question: null,
+    });
+    const client = {
+      data: { userId: 7, sessionId: 12, role: 'host' },
+      emit: vi.fn(),
+    } as unknown as Socket;
+
+    await gamesGateway.startCompetition(client, { sessionId: 12 });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(roomEmit).toHaveBeenCalledWith(
+      'question-countdown',
+      expect.objectContaining({
+        sessionId: 12,
+        questionId: 3,
+        seconds: 5,
+        reason: 'timer-ended',
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(gameEngine.advanceQuestionAutomatically).toHaveBeenCalledWith(12, 3);
   });
 });

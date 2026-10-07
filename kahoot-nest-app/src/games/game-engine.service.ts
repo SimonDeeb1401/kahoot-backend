@@ -443,6 +443,28 @@ export class GameEngineService {
 		return this.getCurrentQuestion(sessionId);
 	}
 
+	async advanceQuestionAutomatically(
+		sessionId: number,
+		questionId: number,
+	): Promise<{ advanced: boolean; question: QuestionDelivery | null }> {
+		const session = await this.sessionsRepository.findOneBy({ id: sessionId });
+		if (!session || session.status !== 'active') {
+			return { advanced: false, question: null };
+		}
+
+		const competition = await this.createCompetitionQuiz(session);
+		const currentQuestion =
+			competition.quiz.questions[session.currentQuestionIndex ?? 0];
+		if (!currentQuestion || currentQuestion.id !== questionId) {
+			return { advanced: false, question: null };
+		}
+
+		return {
+			advanced: true,
+			question: await this.advanceQuestion(session.hostId, sessionId),
+		};
+	}
+
 	private async createCurrentQuestionCompetition(
 		session: GameSession,
 	): Promise<CompetitionQuiz> {

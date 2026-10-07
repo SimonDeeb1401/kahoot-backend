@@ -1,4 +1,4 @@
-import { HttpException } from '@nestjs/common';
+import { ConflictException, HttpException, Logger, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import {
 	ConnectedSocket,
@@ -11,7 +11,7 @@ import {
 } from '@nestjs/websockets';
 import type { Server, Socket } from 'socket.io';
 import type { JwtPayload } from '../auth/auth.service.js';
-import { GameEngineService } from './game-engine.service.js';
+import { GameEngineService, type QuestionDelivery } from './game-engine.service.js';
 
 interface GameSocketData {
 	userId?: number;
@@ -40,15 +40,40 @@ interface SubmitAnswerMessage {
 	answerId: number;
 }
 
+interface AutomaticAdvanceTimer {
+	questionId: number;
+	phase: 'deadline' | 'countdown' | 'advancing';
+	timer: ReturnType<typeof setTimeout>;
+	countdown?: {
+		sessionId: number;
+		questionId: number;
+		seconds: number;
+		reason: 'timer-ended' | 'all-players-answered';
+		advancesAt: string;
+	};
+}
+
 @WebSocketGateway({ cors: { origin: true } })
-export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
+export class GamesGateway
+	implements OnGatewayInit, OnGatewayDisconnect, OnModuleDestroy
+{
 	@WebSocketServer()
 	private server!: Server;
+
+	private readonly logger = new Logger(GamesGateway.name);
+	private readonly automaticAdvanceTimers = new Map<number, AutomaticAdvanceTimer>();
 
 	constructor(
 		private readonly jwtService: JwtService,
 		private readonly gameEngine: GameEngineService,
 	) {}
+
+	onModuleDestroy(): void {
+		for (const { timer } of this.automaticAdvanceTimers.values()) {
+			clearTimeout(timer);
+		}
+		this.automaticAdvanceTimers.clear();
+	}
 
 	afterInit(server: Server): void {
 		server.use(async (client: GameSocket, next) => {
@@ -120,14 +145,28 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 				);
 				if (currentQuestion) {
 					client.emit('question-delivered', currentQuestion);
-					if (snapshot.role === 'host') {
-						client.emit(
-							'answer-progress',
-							await this.gameEngine.getAnswerProgress(
-								message.sessionId,
-								currentQuestion.question.id,
-							),
+					this.scheduleQuestionDeadline(currentQuestion);
+					const progress = await this.gameEngine.getAnswerProgress(
+						message.sessionId,
+						currentQuestion.question.id,
+					);
+					if (
+						progress.totalPlayers > 0 &&
+						progress.answeredCount >= progress.totalPlayers
+					) {
+						await this.beginAutomaticAdvance(
+							message.sessionId,
+							currentQuestion.question.id,
+							'all-players-answered',
 						);
+					}
+					this.emitActiveCountdown(
+						client,
+						message.sessionId,
+						currentQuestion.question.id,
+					);
+					if (snapshot.role === 'host') {
+						client.emit('answer-progress', progress);
 					} else if (message.playerId) {
 						const feedback = await this.gameEngine.getPlayerAnswerFeedback(
 							message.sessionId,
@@ -174,6 +213,7 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 			if (currentQuestion) {
 				const room = this.server.to(this.roomName(message.sessionId));
 				room.emit('question-delivered', currentQuestion);
+				this.scheduleQuestionDeadline(currentQuestion);
 				this.server
 					.to(this.hostRoomName(message.sessionId))
 					.emit(
@@ -213,17 +253,10 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 			);
 			const room = this.server.to(this.roomName(message.sessionId));
 			if (question) {
-				room.emit('question-delivered', question);
-				this.server
-					.to(this.hostRoomName(message.sessionId))
-					.emit(
-						'answer-progress',
-						await this.gameEngine.getAnswerProgress(
-							message.sessionId,
-							question.question.id,
-						),
-					);
+				this.clearAutomaticAdvance(message.sessionId);
+				await this.broadcastQuestion(message.sessionId, question);
 			} else {
+				this.clearAutomaticAdvance(message.sessionId);
 				const [leaderboard, statistics] = await Promise.all([
 					this.gameEngine.getLeaderboard(message.sessionId),
 					this.gameEngine.getQuestionStatistics(message.sessionId),
@@ -272,9 +305,171 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 			this.server
 				.to(this.hostRoomName(client.data.sessionId))
 				.emit('answer-progress', result.progress);
+			if (
+				result.progress.totalPlayers > 0 &&
+				result.progress.answeredCount >= result.progress.totalPlayers
+			) {
+				await this.beginAutomaticAdvance(
+					client.data.sessionId,
+					result.progress.questionId,
+					'all-players-answered',
+				);
+			}
 		} catch (error) {
 			this.emitError(client, error);
 		}
+	}
+
+	private async broadcastQuestion(
+		sessionId: number,
+		question: QuestionDelivery,
+	): Promise<void> {
+		this.server.to(this.roomName(sessionId)).emit('question-delivered', question);
+		this.scheduleQuestionDeadline(question);
+		const progress = await this.gameEngine.getAnswerProgress(
+			sessionId,
+			question.question.id,
+		);
+		this.server
+			.to(this.hostRoomName(sessionId))
+			.emit('answer-progress', progress);
+	}
+
+	private scheduleQuestionDeadline(question: QuestionDelivery): void {
+		const existing = this.automaticAdvanceTimers.get(question.sessionId);
+		if (existing?.questionId === question.question.id) return;
+		this.clearAutomaticAdvance(question.sessionId);
+
+		const endsAt = Date.parse(question.endsAt);
+		if (!Number.isFinite(endsAt)) return;
+
+		const timer = setTimeout(() => {
+			void this.beginAutomaticAdvance(
+				question.sessionId,
+				question.question.id,
+				'timer-ended',
+			);
+		}, Math.max(0, endsAt - Date.now()));
+		timer.unref?.();
+		this.automaticAdvanceTimers.set(question.sessionId, {
+			questionId: question.question.id,
+			phase: 'deadline',
+			timer,
+		});
+	}
+
+	private async beginAutomaticAdvance(
+		sessionId: number,
+		questionId: number,
+		reason: 'timer-ended' | 'all-players-answered',
+	): Promise<void> {
+		try {
+			const current = await this.gameEngine.getCurrentQuestion(sessionId);
+			if (!current || current.question.id !== questionId) {
+				if (this.automaticAdvanceTimers.get(sessionId)?.questionId === questionId) {
+					this.clearAutomaticAdvance(sessionId);
+				}
+				return;
+			}
+
+			const existing = this.automaticAdvanceTimers.get(sessionId);
+			if (
+				existing?.questionId === questionId &&
+				existing.phase !== 'deadline'
+			) {
+				return;
+			}
+			if (existing) clearTimeout(existing.timer);
+
+			const countdown = {
+				sessionId,
+				questionId,
+				seconds: 5,
+				reason,
+				advancesAt: new Date(Date.now() + 5000).toISOString(),
+			};
+			const timer = setTimeout(() => {
+				void this.performAutomaticAdvance(sessionId, questionId);
+			}, 5000);
+			timer.unref?.();
+			this.automaticAdvanceTimers.set(sessionId, {
+				questionId,
+				phase: 'countdown',
+				timer,
+				countdown,
+			});
+			this.server.to(this.roomName(sessionId)).emit('question-countdown', countdown);
+		} catch (error) {
+			this.logger.error('Unable to start the automatic question countdown.', error);
+		}
+	}
+
+	private async performAutomaticAdvance(
+		sessionId: number,
+		questionId: number,
+	): Promise<void> {
+		const pending = this.automaticAdvanceTimers.get(sessionId);
+		if (
+			!pending ||
+			pending.questionId !== questionId ||
+			pending.phase !== 'countdown'
+		) {
+			return;
+		}
+		pending.phase = 'advancing';
+
+		try {
+			const result = await this.gameEngine.advanceQuestionAutomatically(
+				sessionId,
+				questionId,
+			);
+			if (!result.advanced) {
+				this.clearAutomaticAdvance(sessionId);
+				return;
+			}
+
+			this.clearAutomaticAdvance(sessionId);
+			if (result.question) {
+				await this.broadcastQuestion(sessionId, result.question);
+			} else {
+				const [leaderboard, statistics] = await Promise.all([
+					this.gameEngine.getLeaderboard(sessionId),
+					this.gameEngine.getQuestionStatistics(sessionId),
+				]);
+				this.server.to(this.roomName(sessionId)).emit('competition-finished', {
+					sessionId,
+					leaderboard,
+					statistics,
+				});
+			}
+		} catch (error) {
+			if (!(error instanceof ConflictException)) {
+				this.logger.error('Unable to automatically advance the question.', error);
+			}
+			this.clearAutomaticAdvance(sessionId);
+		}
+	}
+
+	private emitActiveCountdown(
+		client: GameSocket,
+		sessionId: number,
+		questionId: number,
+	): void {
+		const pending = this.automaticAdvanceTimers.get(sessionId);
+		if (
+			pending?.questionId === questionId &&
+			pending.phase === 'countdown' &&
+			pending.countdown
+		) {
+			client.emit('question-countdown', pending.countdown);
+		}
+	}
+
+	private clearAutomaticAdvance(sessionId: number): void {
+		const pending = this.automaticAdvanceTimers.get(sessionId);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		this.automaticAdvanceTimers.delete(sessionId);
 	}
 
 	private roomName(sessionId: number): string {
