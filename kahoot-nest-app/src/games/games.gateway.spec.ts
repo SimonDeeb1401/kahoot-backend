@@ -35,7 +35,7 @@ describe('GamesGateway', () => {
   });
 
   it('verifies a token in socket middleware before allowing connection', async () => {
-    jwtService.verifyAsync.mockResolvedValue({ sub: 17 });
+    jwtService.verifyAsync.mockResolvedValue({ sub: 17, tokenUse: 'access' });
     const use = vi.fn();
     gamesGateway.afterInit({ use } as unknown as Server);
     const middleware = use.mock.calls[0][0] as unknown as (

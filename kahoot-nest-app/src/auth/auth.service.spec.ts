@@ -14,6 +14,10 @@ describe('AuthService', () => {
     create: vi.fn(),
   };
   const jwtService = { signAsync: vi.fn() };
+  const configService = {
+    get: vi.fn(() => undefined),
+    getOrThrow: vi.fn(() => 'test-jwt-secret'),
+  };
   let authService: AuthService;
 
   const user = (passwordHash = 'stored-hash'): User =>
@@ -31,6 +35,7 @@ describe('AuthService', () => {
     authService = new AuthService(
       usersService as unknown as UsersService,
       jwtService as unknown as JwtService,
+      configService as never,
     );
   });
 
@@ -59,6 +64,7 @@ describe('AuthService', () => {
     expect(response).toEqual({
       accessToken: 'signed-token',
       tokenType: 'Bearer',
+      refreshToken: 'signed-token',
       user: {
         id: 9,
         username: 'player_one',
@@ -93,7 +99,43 @@ describe('AuthService', () => {
     });
 
     expect(response.accessToken).toBe('signed-token');
-    expect(jwtService.signAsync).toHaveBeenCalledWith({ sub: 9 });
+    expect(jwtService.signAsync).toHaveBeenCalledWith({
+      sub: 9,
+      tokenUse: 'access',
+    });
+  });
+
+  it('issues an access token for a valid refresh token', async () => {
+    jwtService.verifyAsync = vi.fn().mockResolvedValue({
+      sub: 9,
+      tokenUse: 'refresh',
+    });
+    usersService.findById.mockResolvedValue(user());
+
+    await expect(authService.refresh('refresh-token')).resolves.toEqual({
+      accessToken: 'signed-token',
+      tokenType: 'Bearer',
+      user: {
+        id: 9,
+        username: 'player_one',
+        email: 'player@example.com',
+        createdAt: user().createdAt,
+      },
+    });
+    expect(jwtService.verifyAsync).toHaveBeenCalledWith('refresh-token', {
+      secret: 'test-jwt-secret',
+    });
+  });
+
+  it('rejects an access token used as a refresh token', async () => {
+    jwtService.verifyAsync = vi.fn().mockResolvedValue({
+      sub: 9,
+      tokenUse: 'access',
+    });
+
+    await expect(authService.refresh('access-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
   });
 
   it('rejects invalid login credentials without revealing which value failed', async () => {

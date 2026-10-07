@@ -31,6 +31,15 @@ import { QuizzesModule } from './quizzes/quizzes.module.js';
         ) {
           throw new Error('JWT_SECRET must be at least 32 characters long');
         }
+        if (
+          environment.JWT_REFRESH_SECRET !== undefined &&
+          (typeof environment.JWT_REFRESH_SECRET !== 'string' ||
+            environment.JWT_REFRESH_SECRET.length < 32)
+        ) {
+          throw new Error(
+            'JWT_REFRESH_SECRET must be at least 32 characters long',
+          );
+        }
         return environment;
       },
     }),

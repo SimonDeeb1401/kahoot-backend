@@ -25,7 +25,11 @@ export class JwtAuthGuard implements CanActivate {
 
 		try {
 			const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
-			if (!Number.isInteger(payload.sub)) {
+			if (
+				payload.tokenUse !== 'access' ||
+				!Number.isSafeInteger(payload.sub) ||
+				payload.sub < 1
+			) {
 				throw new UnauthorizedException('Invalid bearer token');
 			}
 			request.user = payload;

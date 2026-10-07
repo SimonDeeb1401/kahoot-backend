@@ -60,7 +60,11 @@ export class GamesGateway implements OnGatewayInit, OnGatewayDisconnect {
 
 			try {
 				const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
-				if (!Number.isSafeInteger(payload.sub) || payload.sub < 1) {
+				if (
+					payload.tokenUse !== 'access' ||
+					!Number.isSafeInteger(payload.sub) ||
+					payload.sub < 1
+				) {
 					next(new Error('Unauthorized'));
 					return;
 				}

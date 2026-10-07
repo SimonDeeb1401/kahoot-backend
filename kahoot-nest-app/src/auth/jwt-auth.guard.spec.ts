@@ -22,7 +22,7 @@ describe('JwtAuthGuard', () => {
   }
 
   it('verifies a bearer token and attaches its payload to the request', async () => {
-    const payload = { sub: 9 };
+    const payload = { sub: 9, tokenUse: 'access' as const };
     jwtService.verifyAsync.mockResolvedValue(payload);
     const { context, request } = executionContext('Bearer valid-token');
 
@@ -42,6 +42,15 @@ describe('JwtAuthGuard', () => {
   it('rejects invalid tokens', async () => {
     jwtService.verifyAsync.mockRejectedValue(new Error('invalid token'));
     const { context } = executionContext('Bearer invalid-token');
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+  });
+
+  it('rejects a refresh token presented as an access token', async () => {
+    jwtService.verifyAsync.mockResolvedValue({ sub: 9, tokenUse: 'refresh' });
+    const { context } = executionContext('Bearer refresh-token');
 
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
       UnauthorizedException,
